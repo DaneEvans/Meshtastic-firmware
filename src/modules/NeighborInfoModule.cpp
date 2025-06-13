@@ -115,6 +115,14 @@ void NeighborInfoModule::sendNeighborInfo(NodeNum dest, bool wantReplies)
     service->sendToMesh(p, RX_SRC_LOCAL, true);
 }
 
+/* get neighbor info to either send, or respond to a request from the mesh */
+meshtastic_NeighborInfo NeighborInfoModule::getNeighborInfo()
+{
+    meshtastic_NeighborInfo neighborInfo = meshtastic_NeighborInfo_init_zero;
+    collectNeighborInfo(&neighborInfo);
+    return neighborInfo
+}
+
 /*
 Encompasses the full construction and sending packet to mesh
 Will be used for broadcast.
