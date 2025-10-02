@@ -250,6 +250,7 @@ size_t PhoneAPI::getFromRadio(uint8_t *buf)
         if (config_nonce == SPECIAL_NONCE_ONLY_NODES) {
             // If client only wants node info, jump directly to sending nodes
             state = STATE_SEND_OTHER_NODEINFOS;
+            onNowHasData(0);
         } else {
             state = STATE_SEND_METADATA;
         }
@@ -423,6 +424,7 @@ size_t PhoneAPI::getFromRadio(uint8_t *buf)
                 state = STATE_SEND_FILEMANIFEST;
             } else {
                 state = STATE_SEND_OTHER_NODEINFOS;
+                onNowHasData(0);
             }
             config_state = 0;
         }
@@ -588,6 +590,7 @@ bool PhoneAPI::available()
                 nodeInfoForPhone.snr = isUs ? 0 : nodeInfoForPhone.snr;
                 nodeInfoForPhone.via_mqtt = isUs ? false : nodeInfoForPhone.via_mqtt;
                 nodeInfoForPhone.is_favorite = nodeInfoForPhone.is_favorite || isUs; // Our node is always a favorite
+                onNowHasData(0);
             }
         }
         return true; // Always say we have something, because we might need to advance our state machine
@@ -659,12 +662,46 @@ bool PhoneAPI::wasSeenRecently(uint32_t id)
     return false;
 }
 
+#ifdef DEBUG_PORT
+char phonemsg[201];
+#endif
+
 /**
  * Handle a packet that the phone wants us to send.  It is our responsibility to free the packet to the pool
  */
 bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
 {
     printPacket("PACKET FROM PHONE", &p);
+
+#ifdef DEBUG_PORT
+    auto &pp = p.decoded;
+    meshtastic_NodeInfoLite *n = nodeDB->getMeshNode(getFrom(&p));
+    /*
+    LOG_INFO("PhoneApi msg: from=0x%0x, id=0x%x, ln=%s, rxSNR=%g, hop_limit=%d, hop_start=%d, msg=%.*s",
+        p.from, p.id, n->user.long_name, p.rx_snr, p.hop_limit, p.hop_start, pp.payload.size, pp.payload.bytes);
+    */
+    LOG_INFO("PhoneApi msg: from=0x%0x, id=0x%x, ln=%s, rxSNR=%g, hop_limit=%d, hop_start=%d",
+        p.from, p.id, n->user.long_name, p.rx_snr, p.hop_limit, p.hop_start);
+    uint16_t offset;
+    uint16_t bytes_left = pp.payload.size;
+    bool do_loop = 1;
+    offset = 0;
+    /* apparently, the maximum size log message is about 150 characters. Deal this with this*/
+    while (do_loop) {
+        if (bytes_left <= 150) {
+            memset(phonemsg, 0, sizeof(phonemsg));
+            strncpy(phonemsg, (char *)(pp.payload.bytes+offset), bytes_left);
+            do_loop = 0;
+        } else {
+            memset(phonemsg, 0, sizeof(phonemsg));
+            strncpy(phonemsg, (char *)(pp.payload.bytes+offset), 150);
+            offset = offset + 150;
+            bytes_left = bytes_left-150;
+        }
+        LOG_INFO("z=%s",phonemsg);
+    }
+
+#endif
 
 #if defined(ARCH_PORTDUINO)
     // For use with the simulator, we should not ignore duplicate packets from the phone
@@ -707,6 +744,13 @@ bool PhoneAPI::handleToRadioPacket(meshtastic_MeshPacket &p)
         // sendNotification(meshtastic_LogRecord_Level_WARNING, p.id, "Text messages can only be sent once every 2 seconds");
         return false;
     }
+
+    // Upgrade traceroute requests from phone to use reliable delivery, matching TraceRouteModule
+    if (p.decoded.portnum == meshtastic_PortNum_TRACEROUTE_APP && !isBroadcast(p.to)) {
+        // Use reliable delivery for traceroute requests (which will be copied to traceroute responses by setReplyTo)
+        p.want_ack = true;
+    }
+
     lastPortNumToRadio[p.decoded.portnum] = millis();
     service->handleToRadio(p);
     return true;

@@ -32,9 +32,12 @@ const RegionInfo regions[] = {
     RDEF(US, 902.0f, 928.0f, 100, 0, 30, true, false, false),
 
     /*
-        https://lora-alliance.org/wp-content/uploads/2020/11/lorawan_regional_parameters_v1.0.3reva_0.pdf
+        EN300220 ETSI V3.2.1 [Table B.1, Item H, p. 21]
+
+        https://www.etsi.org/deliver/etsi_en/300200_300299/30022002/03.02.01_60/en_30022002v030201p.pdf
+        FIXME: https://github.com/meshtastic/firmware/issues/3371
      */
-    RDEF(EU_433, 433.0f, 434.0f, 10, 0, 12, true, false, false),
+    RDEF(EU_433, 433.0f, 434.0f, 10, 0, 10, true, false, false),
 
     /*
        https://www.thethingsnetwork.org/docs/lorawan/duty-cycle/
@@ -314,9 +317,8 @@ uint32_t RadioInterface::getTxDelayMsecWeightedWorst(float snr)
 /** Returns true if we should rebroadcast early like a ROUTER */
 bool RadioInterface::shouldRebroadcastEarlyLikeRouter(meshtastic_MeshPacket *p)
 {
-    // If we are a ROUTER or REPEATER, we always rebroadcast early
-    if (config.device.role == meshtastic_Config_DeviceConfig_Role_ROUTER ||
-        config.device.role == meshtastic_Config_DeviceConfig_Role_REPEATER) {
+    // If we are a ROUTER, we always rebroadcast early
+    if (config.device.role == meshtastic_Config_DeviceConfig_Role_ROUTER) {
         return true;
     }
 
@@ -409,7 +411,7 @@ void printPacket(const char *prefix, const meshtastic_MeshPacket *p)
 
 RadioInterface::RadioInterface()
 {
-    assert(sizeof(PacketHeader) == MESHTASTIC_HEADER_LENGTH); // make sure the compiler did what we expected
+    //assert(sizeof(PacketHeader) == MESHTASTIC_HEADER_LENGTH); // make sure the compiler did what we expected
 }
 
 bool RadioInterface::reconfigure()
@@ -671,11 +673,25 @@ void RadioInterface::limitPower(int8_t loraMaxPower)
         power = maxPower;
     }
 
+#ifndef NUM_PA_POINTS
     if (TX_GAIN_LORA > 0) {
         LOG_INFO("Requested Tx power: %d dBm; Device LoRa Tx gain: %d dB", power, TX_GAIN_LORA);
         power -= TX_GAIN_LORA;
     }
+#else
+    // we have an array of PA gain values.  Find the highest power setting that works.
+    const uint16_t tx_gain[NUM_PA_POINTS] = {TX_GAIN_LORA};
+    for (int radio_dbm = 0; radio_dbm < NUM_PA_POINTS; radio_dbm++) {
+        if (((radio_dbm + tx_gain[radio_dbm]) > power) ||
+            ((radio_dbm == (NUM_PA_POINTS - 1)) && ((radio_dbm + tx_gain[radio_dbm]) <= power))) {
+            // we've exceeded the power limit, or hit the max we can do
+            LOG_INFO("Requested Tx power: %d dBm; Device LoRa Tx gain: %d dB", power, tx_gain[radio_dbm]);
+            power -= tx_gain[radio_dbm];
+            break;
+        }
+    }
 
+#endif
     if (power > loraMaxPower) // Clamp power to maximum defined level
         power = loraMaxPower;
 
@@ -699,6 +715,7 @@ size_t RadioInterface::beginSending(meshtastic_MeshPacket *p)
 
     // LOG_DEBUG("Send queued packet on mesh (txGood=%d,rxGood=%d,rxBad=%d)", rf95.txGood(), rf95.rxGood(), rf95.rxBad());
     assert(p->which_payload_variant == meshtastic_MeshPacket_encrypted_tag); // It should have already been encoded by now
+    LOG_DEBUG("TX packet: from=0x%08x,to=0x%08x,id=0x%08x,Ch=0x%x, HopStart=%d, HopLim=%d", p->from, p->to, p->id, p->channel, p->hop_start, p->hop_limit);
 
     radioBuffer.header.from = p->from;
     radioBuffer.header.to = p->to;
@@ -710,9 +727,13 @@ size_t RadioInterface::beginSending(meshtastic_MeshPacket *p)
         LOG_WARN("hop limit %d is too high, setting to %d", p->hop_limit, HOP_RELIABLE);
         p->hop_limit = HOP_RELIABLE;
     }
+    // hard code old hop limit to zero, old hop_start to 1 with 0x20 as initial value
     radioBuffer.header.flags =
-        p->hop_limit | (p->want_ack ? PACKET_FLAGS_WANT_ACK_MASK : 0) | (p->via_mqtt ? PACKET_FLAGS_VIA_MQTT_MASK : 0);
-    radioBuffer.header.flags |= (p->hop_start << PACKET_FLAGS_HOP_START_SHIFT) & PACKET_FLAGS_HOP_START_MASK;
+        0x20 | (p->want_ack ? PACKET_FLAGS_WANT_ACK_MASK : 0) | (p->via_mqtt ? PACKET_FLAGS_VIA_MQTT_MASK : 0);
+
+    radioBuffer.header.hop_limit = p->hop_limit & PACKET_FLAGS_HOP_LIMIT_MASK;
+    radioBuffer.header.hop_start = p->hop_start & PACKET_FLAGS_HOP_START_MASK;
+    radioBuffer.header.magicnum = PACKET_HEADER_MAGIC_NUMBER;
 
     // if the sender nodenum is zero, that means uninitialized
     assert(radioBuffer.header.from);
