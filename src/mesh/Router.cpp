@@ -397,8 +397,6 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
                 // Try to decrypt the packet if we can
                 crypto->decrypt(p->from, p->id, rawSize, bytes);
 
-                // printBytes("plaintext", bytes, p->encrypted.size);
-
                 // Take those raw bytes and convert them back into a well structured protobuf we can understand
                 meshtastic_Data decodedtmp;
                 memset(&decodedtmp, 0, sizeof(decodedtmp));
@@ -440,6 +438,18 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
             // Switch the port from PortNum_TEXT_MESSAGE_COMPRESSED_APP to PortNum_TEXT_MESSAGE_APP
             p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
         } */
+
+        // Message is decrypted. Change range test payload
+        if (isBroadcast(p->to)) {
+            if ((p->decoded.payload.size > 4) && strncmp("seq ", (char *)p->decoded.payload.bytes, 4) == 0) {
+                // this is a range test packet. 
+                auto bp = (char *)p->decoded.payload.bytes + p->decoded.payload.size;
+                auto extra = sprintf(bp, " RSSI=%i SNR=%.2f", p->rx_rssi, p->rx_snr);
+                if (extra > 0){
+                    p->decoded.payload.size = p->decoded.payload.size + extra;
+                }
+            }
+        }
 
         printPacket("decoded message", p);
 #if ENABLE_JSON_LOGGING

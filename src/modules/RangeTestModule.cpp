@@ -8,6 +8,7 @@
  * The RangeTestModule class is an OSThread that runs the module.
  * The RangeTestModuleRadio class handles sending and receiving packets.
  */
+#include "Default.h"
 #include "RangeTestModule.h"
 #include "FSCommon.h"
 #include "MeshService.h"
@@ -29,6 +30,7 @@ RangeTestModule::RangeTestModule() : concurrency::OSThread("RangeTest") {}
 
 uint32_t packetSequence = 0;
 
+
 int32_t RangeTestModule::runOnce()
 {
 #if defined(ARCH_ESP32) || defined(ARCH_NRF52) || defined(ARCH_PORTDUINO)
@@ -40,20 +42,39 @@ int32_t RangeTestModule::runOnce()
 
     // moduleConfig.range_test.enabled = 1;
     // moduleConfig.range_test.sender = 30;
-    // moduleConfig.range_test.save = 1;
+
+    // always disable saving of range test data as we don't want to waste cycles doing this
+    moduleConfig.range_test.save = 0;
 
     // Fixed position is useful when testing indoors.
     // config.position.fixed_position = 1;
 
+    if (moduleConfig.range_test.enabled && moduleConfig.range_test.sender == 0) {
+        moduleConfig.range_test.sender = 30; // always enabled with default sending value
+    }
+
     uint32_t senderHeartbeat = moduleConfig.range_test.sender * 1000;
 
+    // All Cave nodes will have this enabled
     if (moduleConfig.range_test.enabled) {
 
         if (firstTime) {
             rangeTestModuleRadio = new RangeTestModuleRadio();
+            // with Soft RT on/off without reboot, every radio that 
+            // has range_test enabled can possibly be a sender.
+            // So, never disable this thread
 
             firstTime = 0;
+            LOG_INFO("Init Range Test Module -- Sender");
+            started = millis(); // make a note of when we started
+            if (!getRtDynanmicEnable()) {
+                    LOG_INFO("Range Test Module is soft-disabled."); 
+                    return (senderHeartbeat);
+            }
+            
+            return (5000);      // Sending first message 5 seconds after initialization.
 
+#if 0
             if (moduleConfig.range_test.sender) {
                 LOG_INFO("Init Range Test Module -- Sender");
                 started = millis(); // make a note of when we started
@@ -63,18 +84,24 @@ int32_t RangeTestModule::runOnce()
                 return disable();
                 // This thread does not need to run as a receiver
             }
+#endif
         } else {
 
             if (moduleConfig.range_test.sender) {
                 // If sender
-                LOG_INFO("Range Test Module - Sending heartbeat every %d ms", (senderHeartbeat));
+                if (!getRtDynanmicEnable()) {
+                    LOG_INFO("Range Test Module is soft-disabled."); 
+                    return (senderHeartbeat);
+                }
 
+                LOG_INFO("Range Test Module - Sending heartbeat every %d ms", (senderHeartbeat));
+#if !MESHTASTIC_EXCLUDE_GPS
                 LOG_INFO("gpsStatus->getLatitude()     %d", gpsStatus->getLatitude());
                 LOG_INFO("gpsStatus->getLongitude()    %d", gpsStatus->getLongitude());
                 LOG_INFO("gpsStatus->getHasLock()      %d", gpsStatus->getHasLock());
                 LOG_INFO("gpsStatus->getDOP()          %d", gpsStatus->getDOP());
                 LOG_INFO("fixed_position()             %d", config.position.fixed_position);
-
+#endif
                 // Only send packets if the channel is less than 25% utilized.
                 if (airTime->isTxAllowedChannelUtil(true)) {
                     rangeTestModuleRadio->sendPayload();
@@ -111,7 +138,9 @@ void RangeTestModuleRadio::sendPayload(NodeNum dest, bool wantReplies)
     meshtastic_MeshPacket *p = allocDataPacket();
     p->to = dest;
     p->decoded.want_response = wantReplies;
-    p->hop_limit = 0;
+    //p->hop_limit = 0;
+    // Conditionally hop Range Test packets
+    p->hop_limit = getRtHop() ? Default::getConfiguredOrDefaultHopLimit(config.lora.hop_limit) : 0;
     p->want_ack = false;
 
     packetSequence++;
