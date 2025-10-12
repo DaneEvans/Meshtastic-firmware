@@ -50,6 +50,9 @@ class NeighborInfoModule : public ProtobufModule<meshtastic_NeighborInfo>, priva
      */
     void sendNeighborInfo(NodeNum dest = NODENUM_BROADCAST, bool wantReplies = false);
 
+    /* get neighbor info to either send, or respond to a request from the mesh */
+    meshtastic_NeighborInfo getNeighborInfo();
+
     /* update neighbors with subpacket sniffed from network */
     void updateNeighbors(const meshtastic_MeshPacket &mp, const meshtastic_NeighborInfo *np);
 
