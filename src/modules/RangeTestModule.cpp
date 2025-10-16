@@ -169,7 +169,6 @@ ProcessMessage RangeTestModuleRadio::handleReceived(const meshtastic_MeshPacket 
         */
 
         if (!isFromUs(&mp)) {
-
             if (moduleConfig.range_test.save) {
                 appendFile(mp);
             }
@@ -333,7 +332,42 @@ bool RangeTestModuleRadio::appendFile(const meshtastic_MeshPacket &mp)
     fileToAppend.printf("\"%s\"\n", p.payload.bytes);
     fileToAppend.flush();
     fileToAppend.close();
-#endif
 
     return 1;
+
+#else
+    LOG_ERROR("Failed to store range test results - feature only available for ESP32");
+
+    return 0;
+#endif
+}
+
+bool RangeTestModuleRadio::removeFile()
+{
+#ifdef ARCH_ESP32
+    if (!FSBegin()) {
+        LOG_DEBUG("An Error has occurred while mounting the filesystem");
+        return 0;
+    }
+
+    if (!FSCom.exists("/static/rangetest.csv")) {
+        LOG_DEBUG("No range tests found.");
+        return 0;
+    }
+
+    LOG_INFO("Deleting previous range test.");
+    bool result = FSCom.remove("/static/rangetest.csv");
+
+    if (!result) {
+        LOG_ERROR("Failed to delete range test.");
+        return 0;
+    }
+    LOG_INFO("Range test removed.");
+
+    return 1;
+#else
+    LOG_ERROR("Failed to remove range test results - feature only available for ESP32");
+
+    return 0;
+#endif
 }
