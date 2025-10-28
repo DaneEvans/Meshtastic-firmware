@@ -16,7 +16,6 @@
 #include "Router.h"
 #include "configuration.h"
 #include "main.h"
-#include "modules/NeighborInfoModule.h"
 #ifdef ARCH_NRF52
 #include "main.h"
 #endif
@@ -227,11 +226,6 @@ bool AdminModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp, meshta
     case meshtastic_AdminMessage_get_device_metadata_request_tag: {
         LOG_INFO("Client got device metadata");
         handleGetDeviceMetadata(mp);
-        break;
-    }
-    case meshtastic_AdminMessage_get_neighbor_request_tag: {
-        LOG_INFO("Client got device neighbors");
-        handleGetNeighbors(mp);
         break;
     }
     case meshtastic_AdminMessage_factory_reset_config_tag: {
@@ -1026,16 +1020,6 @@ void AdminModule::handleGetDeviceMetadata(const meshtastic_MeshPacket &req)
     myReply = allocDataProtobuf(r);
 }
 
-void AdminModule::handleGetNeighbors(const meshtastic_MeshPacket &req)
-{
-    meshtastic_AdminMessage r = meshtastic_AdminMessage_init_default;
-    // r.get_device_metadata_response = getDeviceMetadata(); // FIXME: This needs to point to the neighbors packet. 
-    r.get_neighbor_response = getNeighborInfo() ; // FIXME: fix stub. 
-    r.which_payload_variant = meshtastic_AdminMessage_get_neighbor_response_tag;
-    setPassKey(&r);
-    myReply = allocDataProtobuf(r);
-}
-
 void AdminModule::handleGetDeviceConnectionStatus(const meshtastic_MeshPacket &req)
 {
     meshtastic_AdminMessage r = meshtastic_AdminMessage_init_default;
@@ -1211,7 +1195,6 @@ bool AdminModule::messageIsResponse(const meshtastic_AdminMessage *r)
         r->which_payload_variant == meshtastic_AdminMessage_get_module_config_response_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_canned_message_module_messages_response_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_device_metadata_response_tag ||
-        r->which_payload_variant == meshtastic_AdminMessage_get_neighbor_response_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_ringtone_response_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_device_connection_status_response_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_node_remote_hardware_pins_response_tag ||
@@ -1229,7 +1212,6 @@ bool AdminModule::messageIsRequest(const meshtastic_AdminMessage *r)
         r->which_payload_variant == meshtastic_AdminMessage_get_module_config_request_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_canned_message_module_messages_request_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_device_metadata_request_tag ||
-        r->which_payload_variant == meshtastic_AdminMessage_get_neighbor_request_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_ringtone_request_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_device_connection_status_request_tag ||
         r->which_payload_variant == meshtastic_AdminMessage_get_node_remote_hardware_pins_request_tag ||

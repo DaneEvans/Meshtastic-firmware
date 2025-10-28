@@ -437,7 +437,7 @@ X(a, STATIC,   ONEOF,    INT32,    (payload_variant,reboot_seconds,reboot_second
 X(a, STATIC,   ONEOF,    INT32,    (payload_variant,shutdown_seconds,shutdown_seconds),  98) \
 X(a, STATIC,   ONEOF,    INT32,    (payload_variant,factory_reset_config,factory_reset_config),  99) \
 X(a, STATIC,   ONEOF,    INT32,    (payload_variant,nodedb_reset,nodedb_reset), 100) \
-X(a, STATIC,   SINGULAR, BYTES,    session_passkey, 101)
+X(a, STATIC,   SINGULAR, BYTES,    session_passkey, 101) \
 X(a, STATIC,   ONEOF,    BOOL,     (payload_variant,get_neighbor_request,get_neighbor_request),  102) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload_variant,get_neighbor_response,get_neighbor_response),  103) \
 
