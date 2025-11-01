@@ -145,6 +145,11 @@ bool NeighborInfoModule::handleReceivedProtobuf(const meshtastic_MeshPacket &mp,
         // If the hopLimit is the same as hopStart, then it is a neighbor
         getOrCreateNeighbor(mp.from, mp.from, 0, mp.rx_snr); // Set the broadcast interval to 0, as we don't know it
     }
+    if (mp.decoded.want_response) {
+        LOG_INFO("NeighborInfo wants response.");
+        sendNeighborInfo(mp.from, false); // do we want this to be dm, or broadcast?
+        // sendNeighborInfo(NODENUM_BROADCAST, false); // do we want this to be dm, or broadcast?
+    }
     // Allow others to handle this packet
     return false;
 }
