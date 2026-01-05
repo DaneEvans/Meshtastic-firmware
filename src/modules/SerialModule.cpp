@@ -1,8 +1,11 @@
 #include "SerialModule.h"
+#include "Channels.h"
 #include "GeoCoord.h"
 #include "MeshService.h"
+#include "MeshTypes.h"
 #include "NMEAWPL.h"
 #include "NodeDB.h"
+#include "RedirectablePrint.h"
 #include "RTC.h"
 #include "Router.h"
 #include "configuration.h"
@@ -82,9 +85,11 @@ bool SerialModule::isValidConfig(const meshtastic_ModuleConfig_SerialConfig &con
 {
     if (config.override_console_serial_port && !IS_ONE_OF(config.mode, meshtastic_ModuleConfig_SerialConfig_Serial_Mode_NMEA,
                                                           meshtastic_ModuleConfig_SerialConfig_Serial_Mode_CALTOPO,
-                                                          meshtastic_ModuleConfig_SerialConfig_Serial_Mode_MS_CONFIG)) {
+                                                          meshtastic_ModuleConfig_SerialConfig_Serial_Mode_MS_CONFIG,
+                                                          meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG,
+                                                          meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY)) {
         const char *warning =
-            "Invalid Serial config: override console serial port is only supported in NMEA and CalTopo output-only modes.";
+            "Invalid Serial config: override console serial port is only supported in NMEA, CalTopo, MS_CONFIG, LOG, and LOG_TEXT_ONLY output-only modes.";
         LOG_ERROR(warning);
 #if !IS_RUNNING_TESTS
         meshtastic_ClientNotification *cn = clientNotificationPool.allocZeroed();
@@ -108,6 +113,13 @@ SerialModuleRadio::SerialModuleRadio() : MeshModule("SerialModuleRadio")
     case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_NMEA:
     case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_CALTOPO:
         ourPortNum = meshtastic_PortNum_POSITION_APP;
+        break;
+    case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY:
+        // For LOG_TEXT_ONLY mode, observe text messages
+        if (textMessageModule) {
+            observe(textMessageModule);
+        }
+        ourPortNum = meshtastic_PortNum_SERIAL_APP;
         break;
     default:
         ourPortNum = meshtastic_PortNum_SERIAL_APP;
@@ -220,6 +232,13 @@ int32_t SerialModule::runOnce()
 #endif
             serialModuleRadio = new SerialModuleRadio();
 
+            // Set up log forwarding for LOG mode
+            if (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG) {
+                RedirectablePrint::uartLogDestination = serialPrint;
+            } else {
+                RedirectablePrint::uartLogDestination = nullptr;
+            }
+
             firstTime = 0;
 
             // in API mode send rebooted sequence
@@ -249,6 +268,11 @@ int32_t SerialModule::runOnce()
                         tempNodeInfo = nodeDB->readNextMeshNode(readIndex);
                     }
                 }
+            } else if (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG ||
+                       moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY) {
+                // These are output-only modes, no input processing needed
+                // LOG mode forwards logs via RedirectablePrint::uartLogDestination
+                // LOG_TEXT_ONLY mode handles messages via observer pattern
             }
 
 #if !defined(TTGO_T_ECHO) && !defined(T_ECHO_LITE) && !defined(CANARYONE) && !defined(MESHLINK) &&                               \
@@ -706,5 +730,56 @@ void SerialModule::processWXSerial()
     }
 #endif
     return;
+}
+
+/**
+ * Observer callback for text messages (LOG_TEXT_ONLY mode)
+ * Formats and sends text messages to UART with time, to, from, and channel info
+ */
+int SerialModuleRadio::onNotify(const meshtastic_MeshPacket *packet)
+{
+    if (moduleConfig.serial.enabled &&
+        moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY) {
+        if (!MeshService::isTextPayload(packet)) {
+            return 0; // Not a text message, continue
+        }
+
+        // Get time
+        uint32_t rtc_sec = getValidTime(RTCQuality::RTCQualityDevice, true);
+        char timeStr[32] = "??:??:??";
+        if (rtc_sec > 0) {
+            long hms = rtc_sec % SEC_PER_DAY;
+            hms = (hms + SEC_PER_DAY) % SEC_PER_DAY;
+            int hour = hms / SEC_PER_HOUR;
+            int min = (hms % SEC_PER_HOUR) / SEC_PER_MIN;
+            int sec = (hms % SEC_PER_HOUR) % SEC_PER_MIN;
+            snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hour, min, sec);
+        }
+
+        // Get sender info
+        const meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(getFrom(packet));
+        const char *fromName = (node && node->has_user) ? node->user.short_name : "???";
+        NodeNum fromNode = getFrom(packet);
+
+        // Get channel info
+        ChannelIndex chIndex = packet->channel ? packet->channel : channels.getPrimaryIndex();
+        const char *channelName = channels.getName(chIndex);
+
+        // Get destination info
+        const char *toInfo = isBroadcast(packet->to) ? "BROADCAST" : "DM";
+
+        // Get message text
+        auto &p = packet->decoded;
+        char messageText[meshtastic_Constants_DATA_PAYLOAD_LEN + 1];
+        size_t msgLen = p.payload.size < sizeof(messageText) ? p.payload.size : sizeof(messageText) - 1;
+        memcpy(messageText, p.payload.bytes, msgLen);
+        messageText[msgLen] = '\0';
+
+        // Format and send to UART
+        serialPrint->printf("[%s] FROM:0x%x (%s) TO:%s CH:%s (%d) MSG:%s\n", timeStr, fromNode, fromName, toInfo,
+                            channelName, chIndex, messageText);
+    }
+
+    return 0; // Continue processing
 }
 #endif
