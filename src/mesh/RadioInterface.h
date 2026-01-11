@@ -10,14 +10,22 @@
 #define MAX_TX_QUEUE 16 // max number of packets which can be waiting for transmission
 
 #define MAX_LORA_PAYLOAD_LEN 255 // max length of 255 per Semtech's datasheets on SX12xx
-#define MESHTASTIC_HEADER_LENGTH 16
+#define MESHTASTIC_HEADER_LENGTH 20
 #define MESHTASTIC_PKC_OVERHEAD 12
 
-#define PACKET_FLAGS_HOP_LIMIT_MASK 0x07
+// Old packet header flags
+//#define PACKET_FLAGS_HOP_LIMIT_MASK 0x07
+//#define PACKET_FLAGS_WANT_ACK_MASK 0x08
+//#define PACKET_FLAGS_VIA_MQTT_MASK 0x10
+//#define PACKET_FLAGS_HOP_START_MASK 0xE0
+//#define PACKET_FLAGS_HOP_START_SHIFT 5
+
+// New packet header flags
 #define PACKET_FLAGS_WANT_ACK_MASK 0x08
 #define PACKET_FLAGS_VIA_MQTT_MASK 0x10
-#define PACKET_FLAGS_HOP_START_MASK 0xE0
-#define PACKET_FLAGS_HOP_START_SHIFT 5
+#define PACKET_FLAGS_HOP_LIMIT_MASK HOP_MAX
+#define PACKET_FLAGS_HOP_START_MASK HOP_MAX
+#define PACKET_HEADER_MAGIC_NUMBER 0xA5C3
 
 /**
  * This structure has to exactly match the wire layout when sent over the radio link.  Used to keep compatibility
@@ -43,6 +51,17 @@ typedef struct {
 
     // Last byte of the NodeNum of the node that will relay/relayed this packet
     uint8_t relay_node;
+
+    uint8_t hop_limit;   // new place for hop_limit
+
+    uint8_t hop_start;   // new place for hop_start
+
+    /**  
+    * a magicnum so that we quickly detect incompatible packets
+    * and discard without wasting cycles decoding
+    **/
+
+    uint16_t magicnum;   
 } PacketHeader;
 
 /**
@@ -54,8 +73,10 @@ typedef struct {
     /** The header, as defined just before */
     PacketHeader header;
 
-    /** The payload, of maximum length minus the header, aligned just to be sure */
-    uint8_t payload[MAX_LORA_PAYLOAD_LEN + 1 - sizeof(PacketHeader)] __attribute__((__aligned__));
+     /** The payload, of maximum length minus the header, aligned just to be sure 
+     * This only needs to be aligned on a four byte boundary.  Must be four bytes for new header to work correctly.
+    */
+    uint8_t payload[MAX_LORA_PAYLOAD_LEN + 1 - sizeof(PacketHeader)] __attribute__((aligned(4)));
 
 } RadioBuffer;
 
@@ -87,9 +108,8 @@ class RadioInterface
     const uint8_t NUM_SYM_CAD = 2;       // Number of symbols used for CAD, 2 is the default since RadioLib 6.3.0 as per AN1200.48
     const uint8_t NUM_SYM_CAD_24GHZ = 4; // Number of symbols used for CAD in 2.4 GHz, 4 is recommended in AN1200.22 of SX1280
     uint32_t slotTimeMsec = computeSlotTimeMsec();
-    uint16_t preambleLength = 16;      // 8 is default, but we use longer to increase the amount of sleep time when receiving
-    uint32_t preambleTimeMsec = 165;   // calculated on startup, this is the default for LongFast
-    uint32_t maxPacketTimeMsec = 3246; // calculated on startup, this is the default for LongFast
+    uint16_t preambleLength = 16;    // 8 is default, but we use longer to increase the amount of sleep time when receiving
+    uint32_t preambleTimeMsec = 165; // calculated on startup, this is the default for LongFast
     const uint32_t PROCESSING_TIME_MSEC =
         4500;                // time to construct, process and construct a packet again (empirically determined)
     const uint8_t CWmin = 3; // minimum CWsize
@@ -102,8 +122,9 @@ class RadioInterface
 
     /**
      * A temporary buffer used for sending/receiving packets, sized to hold the biggest buffer we might need
+     * This only needs to be aligned on a four byte boundary. Must be four bytes for new header to work correctly.
      * */
-    RadioBuffer radioBuffer __attribute__((__aligned__));
+    RadioBuffer radioBuffer  __attribute__((aligned(4)));
     /**
      * Enqueue a received packet for the registered receiver
      */
@@ -190,14 +211,20 @@ class RadioInterface
     virtual void clampToLateRebroadcastWindow(NodeNum from, PacketId id) { return; }
 
     /**
+     * If there is a packet pending TX in the queue with a worse hop limit, remove it pending replacement with a better version
+     * @return Whether a pending packet was removed
+     */
+    virtual bool removePendingTXPacket(NodeNum from, PacketId id, uint32_t hop_limit_lt) { return false; }
+
+    /**
      * Calculate airtime per
      * https://www.rs-online.com/designspark/rel-assets/ds-assets/uploads/knowledge-items/application-notes-for-the-internet-of-things/LoRa%20Design%20Guide.pdf
      * section 4
      *
      * @return num msecs for the packet
      */
-    uint32_t getPacketTime(const meshtastic_MeshPacket *p);
-    uint32_t getPacketTime(uint32_t totalPacketLen);
+    uint32_t getPacketTime(const meshtastic_MeshPacket *p, bool received = false);
+    virtual uint32_t getPacketTime(uint32_t totalPacketLen, bool received = false) = 0;
 
     /**
      * Get the channel we saved.

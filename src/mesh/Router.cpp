@@ -15,6 +15,9 @@
 #if !MESHTASTIC_EXCLUDE_MQTT
 #include "mqtt/MQTT.h"
 #endif
+#if defined(USE_SLINK)
+#include "modules/SerialModule.h"
+#endif
 #include "Default.h"
 #if ARCH_PORTDUINO
 #include "platform/portduino/PortduinoGlue.h"
@@ -37,6 +40,15 @@
 
 static MemoryDynamic<meshtastic_MeshPacket> dynamicPool;
 Allocator<meshtastic_MeshPacket> &packetPool = dynamicPool;
+#elif defined(ARCH_STM32WL) || defined(BOARD_HAS_PSRAM)
+// On STM32 and boards with PSRAM, there isn't enough heap left over for the rest of the firmware if we allocate this statically.
+// For now, make it dynamic again.
+#define MAX_PACKETS                                                                                                              \
+    (MAX_RX_TOPHONE + MAX_RX_FROMRADIO + 2 * MAX_TX_QUEUE +                                                                      \
+     2) // max number of packets which can be in flight (either queued from reception or queued for sending)
+
+static MemoryDynamic<meshtastic_MeshPacket> dynamicPool;
+Allocator<meshtastic_MeshPacket> &packetPool = dynamicPool;
 #else
 // Embedded targets use static memory pools with compile-time constants
 #define MAX_PACKETS_STATIC                                                                                                       \
@@ -47,7 +59,7 @@ static MemoryPool<meshtastic_MeshPacket, MAX_PACKETS_STATIC> staticPool;
 Allocator<meshtastic_MeshPacket> &packetPool = staticPool;
 #endif
 
-static uint8_t bytes[MAX_LORA_PAYLOAD_LEN + 1] __attribute__((__aligned__));
+static uint8_t bytes[MAX_LORA_PAYLOAD_LEN + 1] __attribute__((aligned(4)));
 
 /**
  * Constructor
@@ -67,6 +79,57 @@ Router::Router() : concurrency::OSThread("Router"), fromRadioQueue(MAX_RX_FROMRA
     // init Lockguard for crypt operations
     assert(!cryptLock);
     cryptLock = new concurrency::Lock();
+}
+
+bool Router::shouldDecrementHopLimit(const meshtastic_MeshPacket *p)
+{
+    // First hop MUST always decrement to prevent retry issues
+    if (getHopsAway(*p) == 0) {
+        return true; // Always decrement on first hop
+    }
+
+    // Check if both local device and previous relay are routers (including CLIENT_BASE)
+    bool localIsRouter =
+        IS_ONE_OF(config.device.role, meshtastic_Config_DeviceConfig_Role_ROUTER, meshtastic_Config_DeviceConfig_Role_ROUTER_LATE,
+                  meshtastic_Config_DeviceConfig_Role_CLIENT_BASE);
+
+    // If local device isn't a router, always decrement
+    if (!localIsRouter) {
+        return true;
+    }
+
+    // For subsequent hops, check if previous relay is a favorite router
+    // Optimized search for favorite routers with matching last byte
+    // Check ordering optimized for IoT devices (cheapest checks first)
+    for (size_t i = 0; i < nodeDB->getNumMeshNodes(); i++) {
+        meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(i);
+        if (!node)
+            continue;
+
+        // Check 1: is_favorite (cheapest - single bool)
+        if (!node->is_favorite)
+            continue;
+
+        // Check 2: has_user (cheap - single bool)
+        if (!node->has_user)
+            continue;
+
+        // Check 3: role check (moderate cost - multiple comparisons)
+        if (!IS_ONE_OF(node->user.role, meshtastic_Config_DeviceConfig_Role_ROUTER,
+                       meshtastic_Config_DeviceConfig_Role_ROUTER_LATE)) {
+            continue;
+        }
+
+        // Check 4: last byte extraction and comparison (most expensive)
+        if (nodeDB->getLastByteOfNodeNum(node->num) == p->relay_node) {
+            // Found a favorite router match
+            LOG_DEBUG("Identified favorite relay router 0x%x from last byte 0x%x", node->num, p->relay_node);
+            return false; // Don't decrement hop_limit
+        }
+    }
+
+    // No favorite router match found, decrement hop_limit
+    return true;
 }
 
 /**
@@ -146,9 +209,10 @@ meshtastic_MeshPacket *Router::allocForSending()
 /**
  * Send an ack or a nak packet back towards whoever sent idFrom
  */
-void Router::sendAckNak(meshtastic_Routing_Error err, NodeNum to, PacketId idFrom, ChannelIndex chIndex, uint8_t hopLimit)
+void Router::sendAckNak(meshtastic_Routing_Error err, NodeNum to, PacketId idFrom, ChannelIndex chIndex, uint8_t hopLimit,
+                        bool ackWantsAck)
 {
-    routingModule->sendAckNak(err, to, idFrom, chIndex, hopLimit);
+    routingModule->sendAckNak(err, to, idFrom, chIndex, hopLimit, ackWantsAck);
 }
 
 void Router::abortSendAndNak(meshtastic_Routing_Error err, meshtastic_MeshPacket *p)
@@ -306,7 +370,11 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
 #endif
         packetPool.release(p_decoded);
     }
-
+#if defined(USE_SLINK)
+    if (moduleConfig.serial.enabled){
+        serialModuleRadio->onSend(*p);
+    }
+#endif
 #if HAS_UDP_MULTICAST
     if (udpHandler && config.network.enabled_protocols & meshtastic_Config_NetworkConfig_ProtocolFlags_UDP_BROADCAST) {
         udpHandler->onSend(const_cast<meshtastic_MeshPacket *>(p));
@@ -346,10 +414,6 @@ void Router::sniffReceived(const meshtastic_MeshPacket *p, const meshtastic_Rout
 DecodeState perhapsDecode(meshtastic_MeshPacket *p)
 {
     concurrency::LockGuard g(cryptLock);
-
-    if (config.device.role == meshtastic_Config_DeviceConfig_Role_REPEATER &&
-        config.device.rebroadcast_mode == meshtastic_Config_DeviceConfig_RebroadcastMode_ALL_SKIP_DECODING)
-        return DecodeState::DECODE_FAILURE;
 
     if (config.device.rebroadcast_mode == meshtastic_Config_DeviceConfig_RebroadcastMode_KNOWN_ONLY &&
         (nodeDB->getMeshNode(p->from) == NULL || !nodeDB->getMeshNode(p->from)->has_user)) {
@@ -421,6 +485,11 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
                     LOG_ERROR("Invalid protobufs in received mesh packet id=0x%08x (bad psk?)!", p->id);
                 } else if (decodedtmp.portnum == meshtastic_PortNum_UNKNOWN_APP) {
                     LOG_ERROR("Invalid portnum (bad psk?)!");
+#if !(MESHTASTIC_EXCLUDE_PKI)
+                } else if (!owner.is_licensed && isToUs(p) && decodedtmp.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP) {
+                    LOG_WARN("Rejecting legacy DM");
+                    return DecodeState::DECODE_FAILURE;
+#endif
                 } else {
                     p->decoded = decodedtmp;
                     p->which_payload_variant = meshtastic_MeshPacket_decoded_tag; // change type to decoded
@@ -431,35 +500,6 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
         }
     }
 
-#if HAS_UDP_MULTICAST
-    // Fallback: for UDP multicast, try default preset names with default PSK if normal channel match failed
-    if (!decrypted && p->transport_mechanism == meshtastic_MeshPacket_TransportMechanism_TRANSPORT_MULTICAST_UDP) {
-        if (channels.setDefaultPresetCryptoForHash(p->channel)) {
-            memcpy(bytes, p->encrypted.bytes, rawSize);
-            crypto->decrypt(p->from, p->id, rawSize, bytes);
-
-            meshtastic_Data decodedtmp;
-            memset(&decodedtmp, 0, sizeof(decodedtmp));
-            if (pb_decode_from_bytes(bytes, rawSize, &meshtastic_Data_msg, &decodedtmp) &&
-                decodedtmp.portnum != meshtastic_PortNum_UNKNOWN_APP) {
-                p->decoded = decodedtmp;
-                p->which_payload_variant = meshtastic_MeshPacket_decoded_tag;
-                // Map to our local default channel index (name+PSK default), not necessarily primary
-                ChannelIndex defaultIndex = channels.getPrimaryIndex();
-                for (ChannelIndex i = 0; i < channels.getNumChannels(); ++i) {
-                    if (channels.isDefaultChannel(i)) {
-                        defaultIndex = i;
-                        break;
-                    }
-                }
-                chIndex = defaultIndex;
-                decrypted = true;
-            } else {
-                LOG_WARN("UDP fallback decode attempted but failed for hash 0x%x", p->channel);
-            }
-        }
-    }
-#endif
     if (decrypted) {
         // parsing was successful
         p->channel = chIndex; // change to store the index instead of the hash
@@ -485,6 +525,17 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
             // Switch the port from PortNum_TEXT_MESSAGE_COMPRESSED_APP to PortNum_TEXT_MESSAGE_APP
             p->decoded.portnum = meshtastic_PortNum_TEXT_MESSAGE_APP;
         } */
+        // Message is decrypted. Change range test payload
+        if (isBroadcast(p->to)) {
+            if ((p->decoded.payload.size > 4) && strncmp("seq ", (char *)p->decoded.payload.bytes, 4) == 0) {
+                // this is a range test packet. 
+                auto bp = (char *)p->decoded.payload.bytes + p->decoded.payload.size;
+                auto extra = sprintf(bp, " RSSI=%i SNR=%.2f", p->rx_rssi, p->rx_snr);
+                if (extra > 0){
+                    p->decoded.payload.size = p->decoded.payload.size + extra;
+                }
+            }
+        }
 
         printPacket("decoded message", p);
 #if ENABLE_JSON_LOGGING
@@ -492,6 +543,10 @@ DecodeState perhapsDecode(meshtastic_MeshPacket *p)
 #elif ARCH_PORTDUINO
         if (portduino_config.traceFilename != "" || portduino_config.logoutputlevel == level_trace) {
             LOG_TRACE("%s", MeshPacketSerializer::JsonSerialize(p, false).c_str());
+        } else if (portduino_config.JSONFilename != "") {
+            if (portduino_config.JSONFilter == (_meshtastic_PortNum)0 || portduino_config.JSONFilter == p->decoded.portnum) {
+                JSONFile << MeshPacketSerializer::JsonSerialize(p, false) << std::endl;
+            }
         }
 #endif
         return DecodeState::DECODE_SUCCESS;
@@ -649,6 +704,9 @@ NodeNum Router::getNodeNum()
 void Router::handleReceived(meshtastic_MeshPacket *p, RxSource src)
 {
     bool skipHandle = false;
+#if SLINK_DEBUG
+    LOG_DEBUG("In Router::handleReceived");
+#endif
     // Also, we should set the time from the ISR and it should have msec level resolution
     p->rx_time = getValidTime(RTCQualityFromNet); // store the arrival timestamp for the phone
 
@@ -707,15 +765,19 @@ void Router::handleReceived(meshtastic_MeshPacket *p, RxSource src)
         MeshModule::callModules(*p, src);
 
 #if !MESHTASTIC_EXCLUDE_MQTT
-        // Mark as pki_encrypted if it is not yet decoded and MQTT encryption is also enabled, hash matches and it's a DM not to
-        // us (because we would be able to decrypt it)
-        if (decodedState == DecodeState::DECODE_FAILURE && moduleConfig.mqtt.encryption_enabled && p->channel == 0x00 &&
-            !isBroadcast(p->to) && !isToUs(p))
-            p_encrypted->pki_encrypted = true;
-        // After potentially altering it, publish received message to MQTT if we're not the original transmitter of the packet
-        if ((decodedState == DecodeState::DECODE_SUCCESS || p_encrypted->pki_encrypted) && moduleConfig.mqtt.enabled &&
-            !isFromUs(p) && mqtt)
-            mqtt->onSend(*p_encrypted, *p, p->channel);
+        if (p_encrypted == nullptr) {
+            LOG_WARN("p_encrypted is null, skipping MQTT publish");
+        } else {
+            // Mark as pki_encrypted if it is not yet decoded and MQTT encryption is also enabled, hash matches and it's a DM not
+            // to us (because we would be able to decrypt it)
+            if (decodedState == DecodeState::DECODE_FAILURE && moduleConfig.mqtt.encryption_enabled && p->channel == 0x00 &&
+                !isBroadcast(p->to) && !isToUs(p))
+                p_encrypted->pki_encrypted = true;
+            // After potentially altering it, publish received message to MQTT if we're not the original transmitter of the packet
+            if ((decodedState == DecodeState::DECODE_SUCCESS || p_encrypted->pki_encrypted) && moduleConfig.mqtt.enabled &&
+                !isFromUs(p) && mqtt)
+                mqtt->onSend(*p_encrypted, *p, p->channel);
+        }
 #endif
     }
 

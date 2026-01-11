@@ -7,6 +7,8 @@
 #include "TDeckProKeyboard.h"
 #elif defined(T_LORA_PAGER)
 #include "TLoraPagerKeyboard.h"
+#elif defined(HACKADAY_COMMUNICATOR)
+#include "HackadayCommunicatorKeyboard.h"
 #else
 #include "TCA8418Keyboard.h"
 #endif
@@ -20,6 +22,8 @@ KbI2cBase::KbI2cBase(const char *name)
       TCAKeyboard(*(new TDeckProKeyboard()))
 #elif defined(T_LORA_PAGER)
       TCAKeyboard(*(new TLoraPagerKeyboard()))
+#elif defined(HACKADAY_COMMUNICATOR)
+      TCAKeyboard(*(new HackadayCommunicatorKeyboard()))
 #else
       TCAKeyboard(*(new TCA8418Keyboard()))
 #endif
@@ -328,11 +332,12 @@ int32_t KbI2cBase::runOnce()
                 break;
             }
             if (e.inputEvent != INPUT_BROKER_NONE) {
-                LOG_DEBUG("TCA8418 Notifying: %i Char: %c", e.inputEvent, e.kbchar);
+                // LOG_DEBUG("TCA8418 Notifying: %i Char: %c", e.inputEvent, e.kbchar);
                 this->notifyObservers(&e);
             }
             TCAKeyboard.trigger();
         }
+        TCAKeyboard.clearInt();
         break;
     }
     case 0x02: {
@@ -519,4 +524,11 @@ int32_t KbI2cBase::runOnce()
         LOG_WARN("Unknown kb_model 0x%02x", kb_model);
     }
     return 300;
+}
+
+void KbI2cBase::toggleBacklight(bool on)
+{
+#if defined(T_LORA_PAGER)
+    TCAKeyboard.setBacklight(on);
+#endif
 }
