@@ -760,6 +760,46 @@ int SerialModuleRadio::onNotify(const meshtastic_MeshPacket *packet)
     return 0; // Continue processing
 }
 
+// Simple duplicate suppression - track recently logged packet IDs
+#define MAX_RECENT_LOGGED_PACKETS 4
+struct RecentLoggedPacket {
+    NodeNum from;
+    PacketId id;
+    uint32_t timestamp;
+};
+static RecentLoggedPacket recentLoggedPackets[MAX_RECENT_LOGGED_PACKETS];
+static uint8_t recentLoggedIndex = 0;
+
+static bool wasLoggedRecently(const meshtastic_MeshPacket *p)
+{
+    NodeNum from = getFrom(p);
+    PacketId id = p->id;
+    uint32_t now = millis();
+    uint32_t timeoutMs = 5000; // 5 second window for duplicates
+    
+    // Check if we've seen this (from, id) pair recently
+    for (int i = 0; i < MAX_RECENT_LOGGED_PACKETS; i++) {
+        if (recentLoggedPackets[i].from == from && recentLoggedPackets[i].id == id) {
+            // Check if it's still within the timeout window
+            uint32_t age = now - recentLoggedPackets[i].timestamp;
+            if (age < timeoutMs) {
+                return true; // Duplicate found
+            }
+            // Expired, update with new timestamp
+            recentLoggedPackets[i].timestamp = now;
+            return false;
+        }
+    }
+    
+    // Not found, add it to the list
+    recentLoggedPackets[recentLoggedIndex].from = from;
+    recentLoggedPackets[recentLoggedIndex].id = id;
+    recentLoggedPackets[recentLoggedIndex].timestamp = now;
+    recentLoggedIndex = (recentLoggedIndex + 1) % MAX_RECENT_LOGGED_PACKETS;
+    
+    return false;
+}
+
 // Clean packet logger for LOG and LOG_TEXT_ONLY modes - shows time, to, from, packet ID, and contents
 void SerialModule::logPacketClean(const meshtastic_MeshPacket *p)
 {
@@ -779,6 +819,11 @@ void SerialModule::logPacketClean(const meshtastic_MeshPacket *p)
         if (!MeshService::isTextPayload(p)) {
             return;
         }
+    }
+    
+    // Suppress immediate duplicates
+    if (wasLoggedRecently(p)) {
+        return;
     }
     
     Print *uart = nullptr;
