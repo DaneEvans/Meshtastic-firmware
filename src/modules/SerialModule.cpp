@@ -236,7 +236,7 @@ int32_t SerialModule::runOnce()
                 // Write header line on boot
                 LOG_INFO("SerialModule: Packet Log Mode (LOG) enabled");
                 serialPrint->printf("\n=== Meshtastic Packet Log Mode (LOG) ===\n");
-                serialPrint->printf("Packet logs (similar to debug panel) will be logged to UART\n");
+                serialPrint->printf("Packet logs will be logged to UART\n");
                 serialPrint->printf("Time: %u seconds since boot\n\n", millis() / 1000);
             } else if (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY) {
                 RedirectablePrint::uartLogDestination = nullptr;
@@ -744,56 +744,20 @@ void SerialModule::processWXSerial()
 
 /**
  * Observer callback for text messages
- * Formats and sends text messages to UART with time, to, from, and channel info
+ * Uses the same logger function as LOG mode for consistency
  */
 int SerialModuleRadio::onNotify(const meshtastic_MeshPacket *packet)
 {
     if (moduleConfig.serial.enabled &&
         moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY) {
-        if (!MeshService::isTextPayload(packet)) {
-            return 0; // Not a text message, continue
-        }
-
-        // Get time
-        uint32_t rtc_sec = getValidTime(RTCQuality::RTCQualityDevice, true);
-        char timeStr[32] = "??:??:??";
-        if (rtc_sec > 0) {
-            long hms = rtc_sec % SEC_PER_DAY;
-            hms = (hms + SEC_PER_DAY) % SEC_PER_DAY;
-            int hour = hms / SEC_PER_HOUR;
-            int min = (hms % SEC_PER_HOUR) / SEC_PER_MIN;
-            int sec = (hms % SEC_PER_HOUR) % SEC_PER_MIN;
-            snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d", hour, min, sec);
-        }
-
-        // Get sender info
-        const meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(getFrom(packet));
-        const char *fromName = (node && node->has_user) ? node->user.short_name : "???";
-        NodeNum fromNode = getFrom(packet);
-
-        // Get channel info
-        ChannelIndex chIndex = packet->channel ? packet->channel : channels.getPrimaryIndex();
-        const char *channelName = channels.getName(chIndex);
-
-        // Get destination info
-        const char *toInfo = isBroadcast(packet->to) ? "BROADCAST" : "DM";
-
-        // Get message text
-        auto &p = packet->decoded;
-        char messageText[meshtastic_Constants_DATA_PAYLOAD_LEN + 1];
-        size_t msgLen = p.payload.size < sizeof(messageText) ? p.payload.size : sizeof(messageText) - 1;
-        memcpy(messageText, p.payload.bytes, msgLen);
-        messageText[msgLen] = '\0';
-
-        // Format and send to UART
-        serialPrint->printf("[%s] FROM:0x%x (%s) TO:%s CH:%s (%d) MSG:%s\n", timeStr, fromNode, fromName, toInfo,
-                            channelName, chIndex, messageText);
+        // Use the same logger function for consistency
+        SerialModule::logPacketClean(packet);
     }
 
     return 0; // Continue processing
 }
 
-// Clean packet logger for LOG mode - shows time, to, from, packet ID, and contents
+// Clean packet logger for LOG and LOG_TEXT_ONLY modes - shows time, to, from, packet ID, and contents
 void SerialModule::logPacketClean(const meshtastic_MeshPacket *p)
 {
     LOG_DEBUG("serialModule: logPacketClean called, enabled=%d, mode=%d, uartDest=%p", 
@@ -806,19 +770,36 @@ void SerialModule::logPacketClean(const meshtastic_MeshPacket *p)
         return;
     }
     
-    if (moduleConfig.serial.mode != meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG) {
-        LOG_DEBUG("serialModule: logPacketClean returning - mode is %d, expected LOG (%d)", 
-                  moduleConfig.serial.mode, 
-                  meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG);
+    bool isLogMode = (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG);
+    bool isLogTextOnlyMode = (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY);
+    
+    if (!isLogMode && !isLogTextOnlyMode) {
+        LOG_DEBUG("serialModule: logPacketClean returning - mode is %d, expected LOG or LOG_TEXT_ONLY", 
+                  moduleConfig.serial.mode);
         return;
     }
     
-    if (RedirectablePrint::uartLogDestination == nullptr) {
-        LOG_DEBUG("serialModule: logPacketClean returning - uartLogDestination is null");
+    // For LOG_TEXT_ONLY mode, only process text messages
+    if (isLogTextOnlyMode && p->which_payload_variant == meshtastic_MeshPacket_decoded_tag) {
+        if (!MeshService::isTextPayload(p)) {
+            LOG_DEBUG("serialModule: logPacketClean returning - LOG_TEXT_ONLY mode but not a text message");
+            return;
+        }
+    }
+    
+    Print *uart = nullptr;
+    if (isLogMode) {
+        uart = RedirectablePrint::uartLogDestination;
+    } else if (isLogTextOnlyMode) {
+        // For LOG_TEXT_ONLY, use serialPrint directly
+        uart = serialPrint;
+    }
+    
+    if (uart == nullptr) {
+        LOG_DEBUG("serialModule: logPacketClean returning - uart destination is null");
         return;
     }
 
-    Print *uart = RedirectablePrint::uartLogDestination;
     LOG_DEBUG("serialModule: logPacketClean processing packet id=0x%x from=0x%x to=0x%x", p->id, p->from, p->to);
 
     // Get time

@@ -355,6 +355,12 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
             abortSendAndNak(encodeResult, p);
             return encodeResult; // FIXME - this isn't a valid ErrorCode
         }
+        // Clean packet logging for LOG and LOG_TEXT_ONLY modes (outgoing packets)
+        if (moduleConfig.serial.enabled &&
+            (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG ||
+             moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY)) {
+            SerialModule::logPacketClean(p_decoded);
+        }
 #if !MESHTASTIC_EXCLUDE_MQTT
         // Only publish to MQTT if we're the original transmitter of the packet
         if (moduleConfig.mqtt.enabled && isFromUs(p) && mqtt) {
@@ -697,13 +703,14 @@ void Router::handleReceived(meshtastic_MeshPacket *p, RxSource src)
         else
             printPacket("handleReceived(REMOTE)", p);
 
-        // Clean packet logging for LOG mode
+        // Clean packet logging for LOG and LOG_TEXT_ONLY modes (incoming packets)
         // Note: logPacketClean is static, so we don't need serialModule instance
-        LOG_DEBUG("serialModule: Router::handleReceived checking LOG mode, enabled=%d, mode=%d",
+        LOG_DEBUG("serialModule: Router::handleReceived checking log modes, enabled=%d, mode=%d",
                   moduleConfig.serial.enabled,
                   moduleConfig.serial.mode);
         if (moduleConfig.serial.enabled &&
-            moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG) {
+            (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG ||
+             moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY)) {
             LOG_DEBUG("serialModule: Router::handleReceived calling logPacketClean");
             SerialModule::logPacketClean(p);
         } else {
