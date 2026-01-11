@@ -705,18 +705,10 @@ void Router::handleReceived(meshtastic_MeshPacket *p, RxSource src)
 
         // Clean packet logging for LOG and LOG_TEXT_ONLY modes (incoming packets)
         // Note: logPacketClean is static, so we don't need serialModule instance
-        LOG_DEBUG("serialModule: Router::handleReceived checking log modes, enabled=%d, mode=%d",
-                  moduleConfig.serial.enabled,
-                  moduleConfig.serial.mode);
         if (moduleConfig.serial.enabled &&
             (moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG ||
              moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY)) {
-            LOG_DEBUG("serialModule: Router::handleReceived calling logPacketClean");
             SerialModule::logPacketClean(p);
-        } else {
-            LOG_DEBUG("serialModule: Router::handleReceived NOT calling logPacketClean - enabled=%d mode=%d",
-                      moduleConfig.serial.enabled,
-                      moduleConfig.serial.mode);
         }
 
         // Neighbor info module is disabled, ignore expensive neighbor info packets
