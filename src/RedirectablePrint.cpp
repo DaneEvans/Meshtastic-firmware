@@ -266,44 +266,6 @@ void RedirectablePrint::log_to_ble(const char *logLevel, const char *format, va_
 // Static variable initialization
 Print *RedirectablePrint::uartLogDestination = nullptr;
 
-void RedirectablePrint::log_to_uart(const char *logLevel, const char *format, va_list arg)
-{
-    // Only forward logs if SerialModule is in LOG mode and has set a destination
-    if (uartLogDestination != nullptr && moduleConfig.serial.enabled &&
-        moduleConfig.serial.mode == meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG) {
-        // Format the log message similar to log_to_serial but send to UART
-        va_list copy;
-        va_copy(copy, arg);
-        char printBuf[256];
-        size_t len = vsnprintf(printBuf, sizeof(printBuf), format, copy);
-        va_end(copy);
-
-        if (len > sizeof(printBuf) - 1) {
-            len = sizeof(printBuf) - 1;
-            printBuf[sizeof(printBuf) - 2] = '\n';
-        }
-
-        // Format with timestamp and log level
-        uint32_t rtc_sec = getValidTime(RTCQuality::RTCQualityDevice, true);
-        if (rtc_sec > 0) {
-            long hms = rtc_sec % SEC_PER_DAY;
-            hms = (hms + SEC_PER_DAY) % SEC_PER_DAY;
-            int hour = hms / SEC_PER_HOUR;
-            int min = (hms % SEC_PER_HOUR) / SEC_PER_MIN;
-            int sec = (hms % SEC_PER_HOUR) % SEC_PER_MIN;
-            uartLogDestination->printf("%s | %02d:%02d:%02d ", logLevel, hour, min, sec);
-        } else {
-            uartLogDestination->printf("%s | ??:??:?? ", logLevel);
-        }
-
-        auto thread = concurrency::OSThread::currentThread;
-        if (thread) {
-            uartLogDestination->printf("[%s] ", thread->ThreadName.c_str());
-        }
-
-        uartLogDestination->write((uint8_t *)printBuf, len);
-    }
-}
 
 meshtastic_LogRecord_Level RedirectablePrint::getLogLevel(const char *logLevel)
 {
@@ -384,7 +346,7 @@ void RedirectablePrint::log(const char *logLevel, const char *format, ...)
         log_to_serial(logLevel, newFormat, arg);
         log_to_syslog(logLevel, newFormat, arg);
         log_to_ble(logLevel, newFormat, arg);
-        log_to_uart(logLevel, newFormat, arg);
+        // log_to_uart(logLevel, newFormat, arg);
 
         va_end(arg);
 #ifdef HAS_FREE_RTOS

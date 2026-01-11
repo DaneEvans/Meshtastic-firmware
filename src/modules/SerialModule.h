@@ -34,6 +34,11 @@ class SerialModule : public StreamAPI, private concurrency::OSThread
     uint32_t getBaudRate();
     void sendTelemetry(meshtastic_Telemetry m);
     void processWXSerial();
+
+  public:
+    // TODO: TESTING ONLY - Remove before production!
+    // Clean packet logger for LOG mode (packet log mode)
+    static void logPacketClean(const meshtastic_MeshPacket *p);
 };
 
 extern SerialModule *serialModule;
