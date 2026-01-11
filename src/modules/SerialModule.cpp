@@ -109,6 +109,9 @@ bool SerialModule::isValidConfig(const meshtastic_ModuleConfig_SerialConfig &con
 SerialModuleRadio::SerialModuleRadio() : MeshModule("SerialModuleRadio")
 {
     switch (moduleConfig.serial.mode) {
+    case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_TEXTMSG:
+        ourPortNum = meshtastic_PortNum_TEXT_MESSAGE_APP;
+        break;
     case meshtastic_ModuleConfig_SerialConfig_Serial_Mode_LOG_TEXT_ONLY:
         // For text-only log mode, observe text messages
         if (textMessageModule) {

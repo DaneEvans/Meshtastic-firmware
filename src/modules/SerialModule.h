@@ -36,8 +36,7 @@ class SerialModule : public StreamAPI, private concurrency::OSThread
     void processWXSerial();
 
   public:
-    // TODO: TESTING ONLY - Remove before production!
-    // Clean packet logger for LOG mode (packet log mode)
+    // Clean packet logger for LOG and LOG_TEXT_ONLY modes
     static void logPacketClean(const meshtastic_MeshPacket *p);
 };
 
