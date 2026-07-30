@@ -465,6 +465,8 @@ ErrorCode Router::send(meshtastic_MeshPacket *p)
 
     if (!(p->which_payload_variant == meshtastic_MeshPacket_encrypted_tag ||
           p->which_payload_variant == meshtastic_MeshPacket_decoded_tag)) {
+        // Error returns from here own the packet, as the position-precision path below does.
+        packetPool.release(p);
         return meshtastic_Routing_Error_BAD_REQUEST;
     }
 
@@ -633,7 +635,9 @@ bool checkXeddsaReceivePolicy(meshtastic_MeshPacket *p)
     if (p->decoded.xeddsa_signature.size == XEDDSA_SIGNATURE_SIZE) {
         meshtastic_NodeInfoLite_public_key_t senderKey = {0, {0}};
         meshtastic_NodeInfoLite *node = nodeDB->getMeshNode(p->from);
-        if (nodeDB->copyPublicKey(p->from, senderKey)) {
+        // Authoritative keys only: verifying against an opportunistic cache key would let a planted
+        // key mark its own node a signer, the trust loop #11116 closed on the decrypt path.
+        if (nodeDB->copyPublicKeyAuthoritative(p->from, senderKey)) {
             p->xeddsa_signed =
                 crypto->xeddsa_verify(senderKey.bytes, p->from, p->id, p->decoded.portnum, p->decoded.payload.bytes,
                                       p->decoded.payload.size, p->decoded.xeddsa_signature.bytes);
@@ -681,20 +685,14 @@ bool checkXeddsaReceivePolicy(meshtastic_MeshPacket *p)
         if (compatible)
             return true;
 
-        // In Balanced, preserve legacy unsigned-unicast compatibility and only reject the class a
-        // signing node always signs: a non-PKI broadcast whose signed encoding would still fit the
-        // LoRa frame. Canonical sizing removes unknown protobuf fields before mirroring the
-        // sender-side signedDataFits() gate, so this counts the same fields that gate counted.
-        // Unicast packets and broadcasts too big to carry a signature are never signed, so they
-        // must not be hard-failed here even for a known signer (PKI already returned above).
-        // isKnownXeddsaSigner consults the warm tier too: a signer evicted from the hot store
-        // must not become impersonatable via unsigned broadcasts until it is re-heard.
-        if (nodeDB->isKnownXeddsaSigner(p->from) && isBroadcast(p->to)) {
+        // Balanced rejects only what a signer always signs: non-PKI broadcasts whose signed encoding
+        // would have fit, plus unicasts on ham where licensed senders sign too. Mirrors perhapsEncode.
+        if (nodeDB->isKnownXeddsaSigner(p->from) && (isBroadcast(p->to) || owner.is_licensed)) {
             size_t canonicalSize;
             if (!canonicalSignableSize(&p->decoded, &canonicalSize))
                 return true; // can't size it; never drop on a sizing failure
             if (canonicalSize + XEDDSA_SIGNATURE_FIELD_BYTES + MESHTASTIC_HEADER_LENGTH <= MAX_LORA_PAYLOAD_LEN) {
-                LOG_WARN("Dropping unsigned broadcast from 0x%08x that previously signed", p->from);
+                LOG_WARN("Dropping unsigned packet from 0x%08x that previously signed", p->from);
                 return false;
             }
         }
@@ -1172,7 +1170,12 @@ meshtastic_Routing_Error perhapsEncode(meshtastic_MeshPacket *p)
                          *destKey.bytes);
                 return meshtastic_Routing_Error_PKI_FAILED;
             }
-            crypto->encryptCurve25519(p->to, getFrom(p), destKey, p->id, numbytes, bytes, p->encrypted.bytes);
+            // On failure encrypted.bytes holds no ciphertext, so continuing would put the plaintext
+            // on the air labelled pki_encrypted.
+            if (!crypto->encryptCurve25519(p->to, getFrom(p), destKey, p->id, numbytes, bytes, p->encrypted.bytes)) {
+                LOG_WARN("PKI encryption failed for destination node 0x%08x", p->to);
+                return meshtastic_Routing_Error_PKI_FAILED;
+            }
             numbytes += MESHTASTIC_PKC_OVERHEAD;
             p->channel = 0;
             p->pki_encrypted = true;
